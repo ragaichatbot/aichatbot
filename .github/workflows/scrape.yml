@@ -1,1 +1,32 @@
+name: Scrape BAAP Website
 
+on:
+  schedule:
+    - cron: '0 0,12 * * *'   # Runs at 00:00 and 12:00 UTC every day
+  workflow_dispatch:           # Allows manual run from GitHub Actions tab
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run scraper
+        run: node scrape.js
+
+      - name: Commit data.json to repo
+        run: |
+          git config --global user.email "baap-scraper@github.com"
+          git config --global user.name "BAAP Scraper Bot"
+          git add data.json
+          git diff --staged --quiet || git commit -m "chore: auto-update website data $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push

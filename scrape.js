@@ -1,5 +1,6 @@
 // ══════════════════════════════════════════════════════════
 // BAAP Website Scraper — FULLY DYNAMIC via sitemap.xml
+// v2.1 FIX: Handles sitemap INDEX files (nested sitemaps).
 // Reads ALL pages automatically from sitemap every run.
 // Add a new page to the website → next scrape picks it up.
 // No hardcoding needed. Runs via GitHub Actions every 12h.
@@ -55,7 +56,7 @@ function fetchUrl(url) {
   return new Promise((resolve) => {
     const lib = url.startsWith('https') ? https : http;
     try {
-      const req = lib.get(url, { headers: { 'User-Agent': 'BAAP-Chatbot-Scraper/2.0' } }, (res) => {
+      const req = lib.get(url, { headers: { 'User-Agent': 'BAAP-Chatbot-Scraper/2.1' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           const loc = res.headers.location.startsWith('http')
             ? res.headers.location : BASE_URL + res.headers.location;
@@ -71,19 +72,38 @@ function fetchUrl(url) {
   });
 }
 
-// ── PARSE SITEMAP — extract all <loc> URLs ──
+// ── DETECT SITEMAP INDEX ──
+function isSitemapIndex(xml) {
+  return /<sitemapindex/i.test(xml) || (/<sitemap>/i.test(xml) && !/<urlset/i.test(xml));
+}
+
+// ── PARSE SITEMAP — extract page <loc> URLs (skip XML files) ──
 function parseSitemapUrls(xml) {
   const urls = [];
   const re = /<loc>(https?:\/\/[^<]+)<\/loc>/g;
   let m;
   while ((m = re.exec(xml)) !== null) {
     const url = m[1].trim();
-    // Skip image URLs and unwanted patterns
-    if (!url.match(/\.(jpg|jpeg|png|gif|webp|pdf|zip)/i) && !shouldSkip(url)) {
+    // Skip image URLs, XML sub-sitemaps, and other unwanted patterns
+    if (!url.match(/\.(jpg|jpeg|png|gif|webp|pdf|zip|xml)/i) && !shouldSkip(url)) {
       urls.push(url);
     }
   }
-  return [...new Set(urls)]; // deduplicate
+  return [...new Set(urls)];
+}
+
+// ── PARSE SITEMAP INDEX — extract sub-sitemap URLs (XML only, skip image sitemaps) ──
+function parseSubSitemapUrls(xml) {
+  const urls = [];
+  const re = /<loc>(https?:\/\/[^<]+\.xml[^<]*)<\/loc>/gi;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const url = m[1].trim();
+    if (!url.includes('image-sitemap')) {
+      urls.push(url);
+    }
+  }
+  return [...new Set(urls)];
 }
 
 function shouldSkip(url) {
@@ -97,7 +117,6 @@ function tagsFromUrl(url) {
   TAG_MAP.forEach(({ re, tags: t }) => {
     if (re.test(slug)) tags.push(...t);
   });
-  // Add year if found in URL
   const yearMatch = slug.match(/\/(20\d\d)\//);
   if (yearMatch && !tags.includes(yearMatch[1])) tags.push(yearMatch[1]);
   return [...new Set(tags)];
@@ -107,9 +126,9 @@ function tagsFromUrl(url) {
 function titleFromUrl(url) {
   const slug = url.replace(BASE_URL, '').replace(/\//g, ' ').replace(/-/g, ' ').trim();
   return slug
-    .replace(/\b20\d\d\b \d\d \d\d /g, '') // remove date prefix
+    .replace(/\b20\d\d\b \d\d \d\d /g, '')
     .replace(/\b\w/g, c => c.toUpperCase())
-    .trim() || 'BAAP Page';
+    .trim() || 'BAAP Home';
 }
 
 // ── EXTRACT TEXT from HTML ──
@@ -155,7 +174,7 @@ function parseDate(str) {
   return null;
 }
 
-// ── EVENT STATUS: uses actual content dates, falls back to URL date ──
+// ── EVENT STATUS ──
 function getEventStatus(url, text, now) {
   const nowDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const rawDates = extractDates(text);
@@ -171,23 +190,56 @@ function getEventStatus(url, text, now) {
   return urlDate >= nowDay ? 'upcoming' : 'past';
 }
 
-// ── MAIN ──
-async function scrape() {
-  console.log('BAAP Dynamic Scraper v2.0 starting...\n');
-  const now = new Date();
-
-  // Step 1: Fetch sitemap and get all URLs
+// ── COLLECT ALL PAGE URLS (handles sitemap index) ──
+async function collectAllPageUrls() {
   console.log('Reading sitemap: ' + SITEMAP);
   const sitemapXml = await fetchUrl(SITEMAP);
   if (!sitemapXml) {
     console.error('ERROR: Could not fetch sitemap. Aborting.');
     process.exit(1);
   }
-  const allUrls = parseSitemapUrls(sitemapXml);
-  // Always ensure home page is included
-  if (!allUrls.includes(BASE_URL + '/')) allUrls.push(BASE_URL + '/');
-  if (!allUrls.includes(BASE_URL)) allUrls.push(BASE_URL);
-  console.log('Found ' + allUrls.length + ' pages in sitemap\n');
+
+  let allUrls = [];
+
+  if (isSitemapIndex(sitemapXml)) {
+    // ── SITEMAP INDEX: follow each sub-sitemap ──
+    console.log('Sitemap index detected — fetching sub-sitemaps...');
+    const subSitemaps = parseSubSitemapUrls(sitemapXml);
+    console.log('Sub-sitemaps: ' + subSitemaps.join(', '));
+
+    for (const subUrl of subSitemaps) {
+      process.stdout.write('  Reading: ' + subUrl + ' ... ');
+      const subXml = await fetchUrl(subUrl);
+      if (subXml) {
+        const pageUrls = parseSitemapUrls(subXml);
+        console.log(pageUrls.length + ' pages found');
+        allUrls.push(...pageUrls);
+      } else {
+        console.log('FAILED (skipping)');
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+  } else {
+    // ── REGULAR SITEMAP ──
+    console.log('Regular sitemap — parsing page URLs directly...');
+    allUrls = parseSitemapUrls(sitemapXml);
+  }
+
+  // Deduplicate and ensure homepage
+  allUrls = [...new Set(allUrls)];
+  const home = BASE_URL + '/';
+  if (!allUrls.includes(home)) allUrls.push(home);
+
+  console.log('\nTotal unique pages to scrape: ' + allUrls.length + '\n');
+  return allUrls;
+}
+
+// ── MAIN ──
+async function scrape() {
+  console.log('BAAP Dynamic Scraper v2.1 starting...\n');
+  const now = new Date();
+
+  const allUrls = await collectAllPageUrls();
 
   const data = {
     scraped_at: now.toISOString(),
@@ -204,7 +256,6 @@ async function scrape() {
     pages: []
   };
 
-  // Step 2: Scrape each page
   for (const url of allUrls) {
     const title = titleFromUrl(url);
     process.stdout.write('Scraping: ' + url + ' ... ');
@@ -225,7 +276,7 @@ async function scrape() {
 
   fs.writeFileSync('data.json', JSON.stringify(data, null, 2));
   console.log('\n✓ Done! ' + data.pages.length + ' pages saved to data.json');
-  console.log('✓ Any new pages added to the website will be auto-included next run.');
+  console.log('✓ Sitemap index support active — all pages discovered automatically.');
 }
 
 scrape().catch(console.error);

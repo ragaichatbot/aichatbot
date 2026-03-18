@@ -1,19 +1,15 @@
 // ══════════════════════════════════════════════════════════
 // BAAP Website Scraper — FULLY DYNAMIC via sitemap.xml
-// v2.1 FIX: Handles sitemap INDEX files (nested sitemaps).
-// Reads ALL pages automatically from sitemap every run.
-// Add a new page to the website → next scrape picks it up.
-// No hardcoding needed. Runs via GitHub Actions every 12h.
+// v2.2: Sitemap index support + lastmod capture per page
 // ══════════════════════════════════════════════════════════
 
 const https = require('https');
 const http  = require('http');
 const fs    = require('fs');
 
-const BASE_URL  = 'https://aerospaceparkbengalis.in';
-const SITEMAP   = BASE_URL + '/sitemap.xml';
+const BASE_URL = 'https://aerospaceparkbengalis.in';
+const SITEMAP  = BASE_URL + '/sitemap.xml';
 
-// Skip these — not useful for the chatbot
 const SKIP_PATTERNS = [
   '/wp-', '/feed', '/xmlrpc', '/wp-json', '/embed',
   '/tag/', '/author/', '/page/', '/attachment/',
@@ -21,7 +17,6 @@ const SKIP_PATTERNS = [
   '?', '#'
 ];
 
-// Auto-generate tags from URL slug
 const TAG_MAP = [
   { re: /holi|dol/i,               tags: ['holi','dol','colour','spring','festival','2026'] },
   { re: /saraswati|saraswathi/i,   tags: ['saraswati','puja','pujo','goddess','education','vidya'] },
@@ -56,7 +51,7 @@ function fetchUrl(url) {
   return new Promise((resolve) => {
     const lib = url.startsWith('https') ? https : http;
     try {
-      const req = lib.get(url, { headers: { 'User-Agent': 'BAAP-Chatbot-Scraper/2.1' } }, (res) => {
+      const req = lib.get(url, { headers: { 'User-Agent': 'BAAP-Chatbot-Scraper/2.2' } }, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           const loc = res.headers.location.startsWith('http')
             ? res.headers.location : BASE_URL + res.headers.location;
@@ -77,31 +72,34 @@ function isSitemapIndex(xml) {
   return /<sitemapindex/i.test(xml) || (/<sitemap>/i.test(xml) && !/<urlset/i.test(xml));
 }
 
-// ── PARSE SITEMAP — extract page <loc> URLs (skip XML files) ──
-function parseSitemapUrls(xml) {
-  const urls = [];
-  const re = /<loc>(https?:\/\/[^<]+)<\/loc>/g;
-  let m;
-  while ((m = re.exec(xml)) !== null) {
-    const url = m[1].trim();
-    // Skip image URLs, XML sub-sitemaps, and other unwanted patterns
+// ── PARSE SITEMAP ENTRIES — returns [{url, lastmod}], skipping XML/image files ──
+function parseSitemapEntries(xml) {
+  const entries = [];
+  // Match full <url> blocks to pair loc with lastmod reliably
+  const urlBlocks = xml.match(/<url>[\s\S]*?<\/url>/gi) || [];
+  urlBlocks.forEach(block => {
+    const locMatch  = block.match(/<loc>(https?:\/\/[^<]+)<\/loc>/i);
+    const lastmodMatch = block.match(/<lastmod>([^<]+)<\/lastmod>/i);
+    if (!locMatch) return;
+    const url = locMatch[1].trim();
+    const lastmod = lastmodMatch ? lastmodMatch[1].trim() : null;
     if (!url.match(/\.(jpg|jpeg|png|gif|webp|pdf|zip|xml)/i) && !shouldSkip(url)) {
-      urls.push(url);
+      entries.push({ url, lastmod });
     }
-  }
-  return [...new Set(urls)];
+  });
+  // Deduplicate by URL
+  const seen = {};
+  return entries.filter(e => { if (seen[e.url]) return false; seen[e.url]=true; return true; });
 }
 
-// ── PARSE SITEMAP INDEX — extract sub-sitemap URLs (XML only, skip image sitemaps) ──
+// ── PARSE SITEMAP INDEX — returns sub-sitemap URLs ──
 function parseSubSitemapUrls(xml) {
   const urls = [];
   const re = /<loc>(https?:\/\/[^<]+\.xml[^<]*)<\/loc>/gi;
   let m;
   while ((m = re.exec(xml)) !== null) {
     const url = m[1].trim();
-    if (!url.includes('image-sitemap')) {
-      urls.push(url);
-    }
+    if (!url.includes('image-sitemap')) urls.push(url);
   }
   return [...new Set(urls)];
 }
@@ -110,28 +108,20 @@ function shouldSkip(url) {
   return SKIP_PATTERNS.some(p => url.includes(p));
 }
 
-// ── AUTO-GENERATE TAGS from URL ──
 function tagsFromUrl(url) {
   const slug = url.replace(BASE_URL, '').toLowerCase();
   const tags = ['baap', 'bengali', 'aerospace', 'park'];
-  TAG_MAP.forEach(({ re, tags: t }) => {
-    if (re.test(slug)) tags.push(...t);
-  });
+  TAG_MAP.forEach(({ re, tags: t }) => { if (re.test(slug)) tags.push(...t); });
   const yearMatch = slug.match(/\/(20\d\d)\//);
   if (yearMatch && !tags.includes(yearMatch[1])) tags.push(yearMatch[1]);
   return [...new Set(tags)];
 }
 
-// ── AUTO-GENERATE TITLE from URL slug ──
 function titleFromUrl(url) {
   const slug = url.replace(BASE_URL, '').replace(/\//g, ' ').replace(/-/g, ' ').trim();
-  return slug
-    .replace(/\b20\d\d\b \d\d \d\d /g, '')
-    .replace(/\b\w/g, c => c.toUpperCase())
-    .trim() || 'BAAP Home';
+  return slug.replace(/\b20\d\d\b \d\d \d\d /g, '').replace(/\b\w/g, c => c.toUpperCase()).trim() || 'BAAP Home';
 }
 
-// ── EXTRACT TEXT from HTML ──
 function extractText(html) {
   if (!html) return '';
   html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
@@ -146,7 +136,6 @@ function extractText(html) {
   return text.substring(0, 8000);
 }
 
-// ── EXTRACT DATES from text ──
 function extractDates(text) {
   const patterns = [
     /(\d{1,2}[\s\-](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s\-]\d{4})/gi,
@@ -159,7 +148,6 @@ function extractDates(text) {
   return [...new Set(dates)].slice(0, 8);
 }
 
-// ── PARSE DATE STRING → Date object ──
 function parseDate(str) {
   if (!str) return null;
   str = str.trim();
@@ -174,7 +162,6 @@ function parseDate(str) {
   return null;
 }
 
-// ── EVENT STATUS ──
 function getEventStatus(url, text, now) {
   const nowDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const rawDates = extractDates(text);
@@ -190,59 +177,55 @@ function getEventStatus(url, text, now) {
   return urlDate >= nowDay ? 'upcoming' : 'past';
 }
 
-// ── COLLECT ALL PAGE URLS (handles sitemap index) ──
-async function collectAllPageUrls() {
+// ── COLLECT ALL PAGE ENTRIES [{url, lastmod}] handling sitemap index ──
+async function collectAllPageEntries() {
   console.log('Reading sitemap: ' + SITEMAP);
   const sitemapXml = await fetchUrl(SITEMAP);
-  if (!sitemapXml) {
-    console.error('ERROR: Could not fetch sitemap. Aborting.');
-    process.exit(1);
-  }
+  if (!sitemapXml) { console.error('ERROR: Could not fetch sitemap.'); process.exit(1); }
 
-  let allUrls = [];
+  let allEntries = [];
 
   if (isSitemapIndex(sitemapXml)) {
-    // ── SITEMAP INDEX: follow each sub-sitemap ──
     console.log('Sitemap index detected — fetching sub-sitemaps...');
-    const subSitemaps = parseSubSitemapUrls(sitemapXml);
-    console.log('Sub-sitemaps: ' + subSitemaps.join(', '));
-
-    for (const subUrl of subSitemaps) {
+    const subUrls = parseSubSitemapUrls(sitemapXml);
+    console.log('Sub-sitemaps: ' + subUrls.join(', '));
+    for (const subUrl of subUrls) {
       process.stdout.write('  Reading: ' + subUrl + ' ... ');
       const subXml = await fetchUrl(subUrl);
       if (subXml) {
-        const pageUrls = parseSitemapUrls(subXml);
-        console.log(pageUrls.length + ' pages found');
-        allUrls.push(...pageUrls);
-      } else {
-        console.log('FAILED (skipping)');
-      }
+        const entries = parseSitemapEntries(subXml);
+        console.log(entries.length + ' pages');
+        allEntries.push(...entries);
+      } else { console.log('FAILED (skipping)'); }
       await new Promise(r => setTimeout(r, 500));
     }
   } else {
-    // ── REGULAR SITEMAP ──
-    console.log('Regular sitemap — parsing page URLs directly...');
-    allUrls = parseSitemapUrls(sitemapXml);
+    console.log('Regular sitemap detected...');
+    allEntries = parseSitemapEntries(sitemapXml);
   }
 
-  // Deduplicate and ensure homepage
-  allUrls = [...new Set(allUrls)];
-  const home = BASE_URL + '/';
-  if (!allUrls.includes(home)) allUrls.push(home);
+  // Deduplicate by URL
+  const seen = {};
+  allEntries = allEntries.filter(e => { if (seen[e.url]) return false; seen[e.url]=true; return true; });
 
-  console.log('\nTotal unique pages to scrape: ' + allUrls.length + '\n');
-  return allUrls;
+  // Ensure homepage
+  const home = BASE_URL + '/';
+  if (!allEntries.find(e => e.url === home)) allEntries.push({ url: home, lastmod: null });
+
+  console.log('\nTotal unique pages: ' + allEntries.length + '\n');
+  return allEntries;
 }
 
 // ── MAIN ──
 async function scrape() {
-  console.log('BAAP Dynamic Scraper v2.1 starting...\n');
+  console.log('BAAP Scraper v2.2 starting...\n');
   const now = new Date();
 
-  const allUrls = await collectAllPageUrls();
+  const allEntries = await collectAllPageEntries();
 
   const data = {
     scraped_at: now.toISOString(),
+    scraper_version: '2.2',
     association: {
       name: 'Bengali Association of Aerospace Park (BAAP)',
       website: BASE_URL + '/',
@@ -256,7 +239,7 @@ async function scrape() {
     pages: []
   };
 
-  for (const url of allUrls) {
+  for (const { url, lastmod } of allEntries) {
     const title = titleFromUrl(url);
     process.stdout.write('Scraping: ' + url + ' ... ');
     try {
@@ -265,18 +248,19 @@ async function scrape() {
       const dates  = extractDates(text);
       const status = getEventStatus(url, text, now);
       const tags   = tagsFromUrl(url);
-      data.pages.push({ url, title, tags, status, dates, content: text });
-      console.log('OK (' + status + ', ' + text.length + ' chars)');
+      // lastmod from sitemap = when the page was last edited on the website
+      data.pages.push({ url, title, tags, status, dates, lastmod, content: text });
+      console.log('OK (' + status + ', ' + text.length + ' chars' + (lastmod ? ', lastmod: ' + lastmod : '') + ')');
       await new Promise(r => setTimeout(r, 700));
     } catch(e) {
       console.log('FAILED: ' + e.message);
-      data.pages.push({ url, title, tags: tagsFromUrl(url), status: 'unknown', dates: [], content: '' });
+      data.pages.push({ url, title, tags: tagsFromUrl(url), status: 'unknown', dates: [], lastmod, content: '' });
     }
   }
 
   fs.writeFileSync('data.json', JSON.stringify(data, null, 2));
   console.log('\n✓ Done! ' + data.pages.length + ' pages saved to data.json');
-  console.log('✓ Sitemap index support active — all pages discovered automatically.');
+  console.log('✓ Each page now includes lastmod date from sitemap for provenance tracking.');
 }
 
 scrape().catch(console.error);

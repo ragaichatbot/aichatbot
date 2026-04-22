@@ -406,7 +406,7 @@ async function askGemini(question) {
   var phones = extractPhonesWithContext();
   // phoneBlock: only bare numbers — no context snippets to prevent name hallucination
   var phoneBlock = phones.length > 0
-    ? '\n=== PHONE NUMBERS FOUND IN WEBSITE CONTENT (list exactly as-is, no names unless explicitly in content) ===\n'
+    ? '\n=== PHONE NUMBERS FOUND IN WEBSITE CONTENT (list exactly as-is number without associating any names even if it is there in the content, no names to be given even if it is there explicitly in content) ===\n'
       + phones.map(function(r, i) { return (i+1) + '. ' + r.phone; }).join('\n')
     : '';
 
@@ -415,7 +415,7 @@ async function askGemini(question) {
     + 'Always quote the 2026 fee of Rs 10,000 when anyone asks about membership fees today.\n';
 
   var contactRule = isContact
-    ? 'CONTACT QUERY CONFIRMED: Give email, website, all social media links, and location. If phone numbers appear in WEBSITE CONTENT, list them exactly as they appear — numbers only, with no names unless a name is explicitly printed alongside that number in the source text. Keep it clean and brief.\n'
+    ? 'CONTACT QUERY CONFIRMED: Give email, website, all social media links, and location. If phone numbers appear in WEBSITE CONTENT, list them exactly as they appear — numbers only, with no names even if it is there. Keep it clean and brief.\n'
     : 'PHONE NUMBER RULE: Never mention any phone number unless the user explicitly asks. Email and social links are fine to share when relevant.';
 
   var eventRule = isEvent
@@ -475,7 +475,7 @@ async function askGemini(question) {
     + 'RULE 3 — EQUAL QUALITY: Answer equally well in both English and Bengali.\n'
     + 'RULE 4 — FORMAT: Plain text, line breaks for readability. No asterisks, no bullet symbols, no markdown. Hyperlinks shown as short labels not full URLs.\n'
     + 'RULE 5 — NEVER TRUNCATE: Every sentence you start must be finished. If running long, summarise briefly but always finish.\n'
-    + 'RULE 6 — PHONE NUMBERS: Never mention any phone number unless the user explicitly asks. Only list numbers exactly as they appear in WEBSITE CONTENT — no names attached unless the name is explicitly written next to the number in the content. Never infer or fabricate who a number belongs to.\n'
+    + 'RULE 6 — PHONE NUMBERS: Never mention any phone number unless the user explicitly asks. Only list numbers exactly as they appear in WEBSITE CONTENT without any names associated to it, even if it is present in the content. Never infer or fabricate who a number belongs to.\n'
     + 'RULE 7 — MEMBERSHIP FEES: Show ONLY if the user explicitly asks about fees, membership, or joining. Never mention fees unprompted.\n'
     + 'RULE 8 — EVENT RESPONSES:\n'
     + '  For PAST events: Give a brief summary — what it was, when it happened, 1-2 sentences.\n'
